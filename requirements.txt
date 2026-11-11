@@ -1,0 +1,27 @@
+# ── LLM, STT & RAG ────────────────────────────────────────
+groq>=0.9.0
+langchain-core>=0.2.0
+langchain-groq>=0.1.6
+langchain-google-genai>=1.0.6
+langchain-pinecone>=0.1.3
+langchain-community>=0.2.0
+langchain-text-splitters>=0.2.0
+pinecone>=3.2.2
+
+# ── Database ──────────────────────────────────────────────
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+
+# ── API ───────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# ── Voice (TTS + playback) ────────────────────────────────
+gtts>=2.5.1
+# playsound==1.2.2   # optional: often fails to install, tts.py has fallbacks
+# pyaudio>=0.2.14    # only needed for live microphone mode
+
+# ── Utilities ─────────────────────────────────────────────
+python-dotenv>=1.0.1
+requests>=2.32.0

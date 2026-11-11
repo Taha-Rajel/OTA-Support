@@ -1,0 +1,42 @@
+# ── Groq (LLM + Whisper STT) ──────────────────
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxx
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_TEMPERATURE=0.3
+GROQ_MAX_TOKENS=1024
+
+# ── Gemini (embeddings only) ──────────────────
+GEMINI_API_KEY=AQ.xxxxxxxxxxxxxxxxxxxxxxx
+EMBEDDING_MODEL=models/gemini-embedding-001
+EMBEDDING_DIMENSIONS=768
+
+# ── Pinecone ──────────────────────────────────
+PINECONE_API_KEY=pcsk_xxxxxxxxxxxxxxxxxxxxxxxx
+PINECONE_INDEX_NAME=antigravity-kb
+PINECONE_REGION=us-east-1
+
+# ── PostgreSQL (the README uses antigravity_db) ──
+DATABASE_URL=postgresql://postgres:PASSWORD@localhost:5432/antigravity_db
+
+# ── Knowledge base chunking ───────────────────
+DOCS_PATH=knowledge_base/documents
+CHUNK_SIZE=500
+CHUNK_OVERLAP=50
+
+# ── Recurring-issue alerts ────────────────────
+RECURRING_ISSUE_THRESHOLD=5
+RECURRING_ISSUE_WINDOW_MINUTES=120
+
+# ── Optional: email alerts (leave empty to disable) ──
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+
+# ── Optional: Slack alerts ────────────────────
+SLACK_WEBHOOK_URL=
+
+# ── Optional: TTS / debug ─────────────────────
+TTS_LANGUAGE=en
+TTS_SLOW=False
+TTS_OUTPUT_PATH=
+DEBUG=False
