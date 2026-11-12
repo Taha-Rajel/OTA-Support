@@ -9,3 +9,5 @@ __pycache__/
 .idea/
 .vscode/
 *.log
+ui/audio/*.mp3
+ui/audio/*.webm

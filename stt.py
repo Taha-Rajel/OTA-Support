@@ -50,6 +50,22 @@ def transcribe_file(file_path: str) -> str:
     return text
 
 
+# ── Transcribe audio sent by the web UI (webm/ogg/mp4) ────
+def transcribe_upload(audio_bytes: bytes, filename: str = "audio.webm",
+                      language: str = "") -> str:
+    """
+    Transcribe an in-memory audio blob (e.g. MediaRecorder output).
+    `language`: ISO code like "en", "fr", "ar" — empty = auto-detect.
+    """
+    kwargs = dict(model=STT_MODEL, file=(filename, audio_bytes))
+    if language:
+        kwargs["language"] = language
+    transcription = client.audio.transcriptions.create(**kwargs)
+    text = transcription.text.strip()
+    print(f"  ✓ STT result: '{text[:80]}'")
+    return text
+
+
 # ── Transcribe raw PCM bytes (from live capture) ──────────
 def transcribe_bytes(audio_bytes: bytes, sample_rate: int = 16000) -> str:
     """

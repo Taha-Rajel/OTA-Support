@@ -146,7 +146,7 @@ def ask_knowledge_base(question: str) -> str:
 
 # ── Run directly to upload docs ────────────────────────────
 if __name__ == "__main__":
-    print("\n── AntiGravity KB Setup ──────────────────")
+    print("\n── OTA Support KB Setup ──────────────────")
     get_pinecone_index()
     upload_documents()
     print("── Done ──────────────────────────────────\n")

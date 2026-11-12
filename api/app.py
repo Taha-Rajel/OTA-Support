@@ -10,8 +10,11 @@ Endpoints:
   GET  /health        — liveness check
 """
 
-from fastapi import FastAPI, HTTPException
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -19,7 +22,7 @@ import uvicorn
 from agent.brain       import handle_customer_input
 from agent.resolution  import process_resolution
 from analytics.monitor import check_and_alert
-from db.models         import init_db, SessionLocal, CallReport
+from db.models         import init_db, SessionLocal, CallReport, Feedback
 from db.reports        import (
     generate_call_id,
     save_call_report,
@@ -28,7 +31,7 @@ from db.reports        import (
 
 # ── App setup ──────────────────────────────────────────────
 app = FastAPI(
-    title       = "AntiGravity Voice Agent API",
+    title       = "OTA Support Voice Agent API",
     description = "AI-powered telecom customer support",
     version     = "1.0.0"
 )
@@ -162,10 +165,73 @@ def get_call(call_id: str):
     }
 
 
+# ── POST /transcribe ──────────────────────────────────────
+@app.post("/transcribe")
+async def transcribe(request: Request, language: str = ""):
+    """
+    Speech-to-text for the web UI. The browser sends the raw audio bytes
+    (audio/webm, audio/ogg, audio/mp4...) as the request body.
+    """
+    audio = await request.body()
+    if len(audio) < 1000:
+        return {"text": ""}
+
+    content_type = request.headers.get("content-type", "audio/webm")
+    ext = "webm"
+    if "ogg" in content_type:
+        ext = "ogg"
+    elif "mp4" in content_type or "m4a" in content_type:
+        ext = "mp4"
+    elif "wav" in content_type:
+        ext = "wav"
+
+    try:
+        from stt import transcribe_upload      # lazy: needs GROQ_API_KEY
+        text = transcribe_upload(audio, f"audio.{ext}", language)
+    except Exception as e:
+        print(f"✗ Transcription failed: {e}")
+        raise HTTPException(status_code=502, detail="Speech-to-text failed")
+    return {"text": text}
+
+
+# ── POST /feedback ────────────────────────────────────────
+class FeedbackRequest(BaseModel):
+    rating : int = 0
+    comment: str = ""
+    channel: str = "chat"
+
+
+@app.post("/feedback")
+def submit_feedback(req: FeedbackRequest):
+    """Store star rating / comment sent from the web UI."""
+    if not (0 <= req.rating <= 5):
+        raise HTTPException(status_code=422, detail="rating must be 0-5")
+    if req.rating == 0 and not req.comment.strip():
+        raise HTTPException(status_code=422, detail="rating or comment required")
+
+    db = SessionLocal()
+    try:
+        db.add(Feedback(rating=req.rating, comment=req.comment.strip()[:500],
+                        channel=req.channel))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"✗ Failed to save feedback: {e}")
+        raise HTTPException(status_code=500, detail="Could not save feedback")
+    finally:
+        db.close()
+    return {"status": "saved"}
+
+
 # ── GET /health ───────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "AntiGravity Voice Agent"}
+    return {"status": "ok", "service": "OTA Support Voice Agent"}
+
+
+# ── Serve the web UI (must stay AFTER all API routes) ─────
+UI_DIR = Path(__file__).resolve().parent.parent / "ui"
+app.mount("/", StaticFiles(directory=UI_DIR, html=True), name="ui")
 
 
 # ── Run directly ──────────────────────────────────────────

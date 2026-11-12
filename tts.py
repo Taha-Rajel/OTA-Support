@@ -94,5 +94,5 @@ def speak_text_only(text: str) -> None:
 
 # ── Self-test ─────────────────────────────────────────────
 if __name__ == "__main__":
-    test_text = "Hello! Welcome to AntiGravity support. How can I help you today?"
+    test_text = "Hello! Welcome to OTA Support. How can I help you today?"
     speak(test_text)

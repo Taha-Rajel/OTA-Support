@@ -1,5 +1,5 @@
 """
-main.py  ──  AntiGravity Voice Agent — Entry Point
+main.py  ──  OTA Support Voice Agent — Entry Point
 Runs the full pipeline for one call or a live interactive session:
 
   Microphone / audio file
@@ -97,7 +97,7 @@ def run_call(customer_input: str, customer_name: str = "Unknown", speak_reply: b
 # ── Interactive text session ───────────────────────────────
 def run_text_session():
     print("\n" + "="*55)
-    print("  AntiGravity Voice Agent — Text Mode")
+    print("  OTA Support Voice Agent — Text Mode")
     print("  Type your message and press Enter.")
     print("  Type 'quit' or 'exit' to end the session.")
     print("="*55)
@@ -114,7 +114,7 @@ def run_text_session():
         if not user_input:
             continue
         if user_input.lower() in {"quit", "exit", "bye", "goodbye"}:
-            print("\n🤖 Agent: Thank you for contacting AntiGravity. Have a great day!")
+            print("\n🤖 Agent: Thank you for contacting OTA Support. Have a great day!")
             break
 
         run_call(customer_input=user_input, customer_name=customer_name, speak_reply=False)
@@ -126,12 +126,12 @@ def run_voice_session():
     from tts import speak
 
     print("\n" + "="*55)
-    print("  AntiGravity Voice Agent — Voice Mode")
+    print("  OTA Support Voice Agent — Voice Mode")
     print("  Press Ctrl+C to end the session.")
     print("="*55)
 
     customer_name = "Voice Customer"
-    speak("Welcome to AntiGravity support. How can I help you today?")
+    speak("Welcome to OTA Support. How can I help you today?")
 
     while True:
         try:
@@ -143,7 +143,7 @@ def run_voice_session():
                 continue
 
             if any(w in customer_input.lower() for w in ["goodbye", "bye", "quit", "exit"]):
-                speak("Thank you for calling AntiGravity. Have a wonderful day!")
+                speak("Thank you for calling OTA Support. Have a wonderful day!")
                 break
 
             run_call(customer_input=customer_input, customer_name=customer_name, speak_reply=True)
@@ -166,15 +166,16 @@ def run_file(file_path: str):
 # ── Start FastAPI server ───────────────────────────────────
 def run_api():
     import uvicorn
-    print("\n🚀 Starting AntiGravity API on http://0.0.0.0:8000")
-    print("   Docs: http://localhost:8000/docs\n")
+    print("\n🚀 Starting OTA Support on http://0.0.0.0:8000")
+    print("   Web UI : http://localhost:8000")
+    print("   API docs: http://localhost:8000/docs\n")
     uvicorn.run("api.app:app", host="0.0.0.0", port=8000, reload=True)
 
 
 # ── CLI ────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="AntiGravity Voice Agent"
+        description="OTA Support Voice Agent"
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--text",  action="store_true", help="Text input mode (no mic)")

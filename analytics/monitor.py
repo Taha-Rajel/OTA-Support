@@ -90,7 +90,7 @@ def _build_alert_body(issue_category: str, occurrences: int) -> str:
     unresolved_count = len(unresolved)
 
     return (
-        f"⚠️  RECURRING ISSUE ALERT — AntiGravity Voice Agent\n"
+        f"⚠️  RECURRING ISSUE ALERT — OTA Support Voice Agent\n"
         f"{'─' * 45}\n"
         f"Issue Category : {issue_category.upper()}\n"
         f"Occurrences    : {occurrences} times in the last {WINDOW_MINUTES} minutes\n"
@@ -123,7 +123,7 @@ def check_and_alert(issue_category: str, escalation_message: str = None) -> bool
     if escalation_message:
         body += f"\nLatest escalation:\n{escalation_message}"
 
-    subject = f"[AntiGravity Alert] Recurring {issue_category} issues ({occurrences}x)"
+    subject = f"[OTA Support Alert] Recurring {issue_category} issues ({occurrences}x)"
 
     # Dispatch
     send_email_alert(subject, body)
@@ -149,14 +149,14 @@ def send_daily_summary() -> None:
 
     lines = [f"  • [{c.call_id}] {c.customer_name} — {c.issue_category}" for c in unresolved]
     body  = (
-        f"📋 Daily Unresolved Calls Report — AntiGravity\n"
+        f"📋 Daily Unresolved Calls Report — OTA Support\n"
         f"{'─' * 45}\n"
         f"Total unresolved: {len(unresolved)}\n\n"
         + "\n".join(lines)
         + f"\n{'─' * 45}\n"
     )
 
-    send_email_alert("[AntiGravity] Daily Unresolved Calls", body)
+    send_email_alert("[OTA Support] Daily Unresolved Calls", body)
     send_slack_alert(body)
     print(f"  ✓ Daily summary sent ({len(unresolved)} unresolved calls)")
 
@@ -164,6 +164,6 @@ def send_daily_summary() -> None:
 # ── Self-test ──────────────────────────────────────────────
 if __name__ == "__main__":
     print("\n── Monitor self-test ─────────────────────")
-    send_slack_alert("🧪 AntiGravity monitor test message")
-    send_email_alert("AntiGravity test", "This is a test alert from monitor.py")
+    send_slack_alert("🧪 OTA Support monitor test message")
+    send_email_alert("OTA Support test", "This is a test alert from monitor.py")
     print("─────────────────────────────────────────\n")

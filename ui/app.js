@@ -22,8 +22,16 @@ const state = {
   history:           [],     // { id, snippet, time, type, status }
   chatLog:           [],     // { role, text, time } — for report export
   callTranscriptText:'',     // captured transcript text for the report
-  mediaRecorder:     null,
+  mediaRecorder:     null,   // records the WHOLE call (customer mic)
   audioChunks:       [],
+  callStream:        null,   // MediaStream from the microphone
+  audioCtx:          null,
+  analyser:          null,
+  vadThreshold:      0.02,
+  callRunId:         0,      // invalidates a running call loop when it ends
+  callLive:          false,  // true once the mic is open and the loop runs
+  callTurns:         [],     // booleans: was each customer turn resolved?
+  speechToken:       0,
 };
 
 // ══════════════════════════════════════════════════════
@@ -65,6 +73,48 @@ const statRating      = $('stat-rating');
 const quickActions    = $('quick-actions');
 const btnExportChat   = $('btn-export-chat');
 const toastEl         = $('toast');
+const statusDot       = $('status-dot');
+const statusLabel     = $('status-label');
+const settingsModal   = $('settings-modal');
+const setName         = $('set-name');
+const setLang         = $('set-lang');
+const setRead         = $('set-read');
+
+// ══════════════════════════════════════════════════════
+// SETTINGS (saved in this browser)
+// ══════════════════════════════════════════════════════
+const SETTINGS_KEY = 'ag_settings';
+const settings = { name: '', language: 'en', readReplies: false };
+try {
+  Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'));
+} catch (_) { /* storage unavailable — keep defaults */ }
+
+function customerName() { return (settings.name || '').trim() || 'Web User'; }
+function sttLanguage()  { return settings.language === 'auto' ? '' : settings.language; }
+
+function openSettings() {
+  setName.value    = settings.name;
+  setLang.value    = settings.language;
+  setRead.checked  = settings.readReplies;
+  settingsModal.classList.remove('hidden');
+  setName.focus();
+}
+function closeSettings() { settingsModal.classList.add('hidden'); }
+
+$('btn-settings').addEventListener('click', openSettings);
+$('set-cancel').addEventListener('click', closeSettings);
+settingsModal.addEventListener('click', e => { if (e.target === settingsModal) closeSettings(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !settingsModal.classList.contains('hidden')) closeSettings();
+});
+$('set-save').addEventListener('click', () => {
+  settings.name        = setName.value.trim().slice(0, 40);
+  settings.language    = setLang.value;
+  settings.readReplies = setRead.checked;
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
+  closeSettings();
+  showToast('✓ Settings saved');
+});
 
 // ══════════════════════════════════════════════════════
 // WELCOME SCREEN
@@ -140,7 +190,7 @@ function exportChatReport() {
     'OTA SUPPORT — CONVERSATION REPORT',
     '═'.repeat(50),
     `Generated  : ${nowFull()}`,
-    `Agent      : OTA Support AI (Powered by AntiGravity AI)`,
+    `Agent      : OTA Support AI`,
     `Channel    : Chat`,
     `Sessions   : ${state.sessions}`,
     `Resolved   : ${state.resolved} / ${state.sessions}`,
@@ -151,7 +201,7 @@ function exportChatReport() {
     lines,
     '─'.repeat(50),
     '',
-    'OTA Support v1.0 — Confidential — AntiGravity AI',
+    'OTA Support v1.0 — Confidential',
   ].join('\n');
 
   const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
@@ -171,7 +221,7 @@ function exportCallReport(durationSecs) {
     '═'.repeat(50),
     `Generated  : ${nowFull()}`,
     `Duration   : ${dur}`,
-    `Agent      : OTA Support AI (Powered by AntiGravity AI)`,
+    `Agent      : OTA Support AI`,
     `Channel    : Voice Call`,
     '═'.repeat(50),
     'LIVE TRANSCRIPT',
@@ -179,7 +229,7 @@ function exportCallReport(durationSecs) {
     state.callTranscriptText || 'No transcript captured.',
     '─'.repeat(50),
     '',
-    'OTA Support v1.0 — Confidential — AntiGravity AI',
+    'OTA Support v1.0 — Confidential',
   ].join('\n');
 
   const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
@@ -194,81 +244,38 @@ btnDownloadCall.addEventListener('click', () => {
 // ══════════════════════════════════════════════════════
 // AUDIO RECORDING (via MediaRecorder API)
 // ══════════════════════════════════════════════════════
-async function startAudioRecording() {
+function pickMime() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  return (window.MediaRecorder && types.find(t => MediaRecorder.isTypeSupported(t))) || '';
+}
+
+// Records the whole call (customer microphone) for the downloadable file
+function startAudioRecording(stream) {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    state.mediaRecorder = new MediaRecorder(stream);
+    const mime = pickMime();
+    state.mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     state.audioChunks   = [];
     state.mediaRecorder.ondataavailable = e => {
       if (e.data.size > 0) state.audioChunks.push(e.data);
     };
     state.mediaRecorder.start();
-    console.log('[OTA] Audio recording started');
   } catch (err) {
-    console.log('[OTA] Microphone not available:', err.message);
+    console.warn('[OTA] Call recording unavailable:', err.message);
     state.mediaRecorder = null;
   }
 }
 
 function stopAudioRecording() {
   return new Promise(resolve => {
-    if (!state.mediaRecorder || state.mediaRecorder.state === 'inactive') {
-      resolve(null);
-      return;
-    }
-    state.mediaRecorder.onstop = () => {
-      const blob = new Blob(state.audioChunks, { type: 'audio/webm' });
-      // Stop all mic tracks
-      state.mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    const rec = state.mediaRecorder;
+    if (!rec || rec.state === 'inactive') { resolve(null); return; }
+    rec.onstop = () => {
+      const blob = new Blob(state.audioChunks, { type: rec.mimeType || 'audio/webm' });
       state.mediaRecorder = null;
       resolve(blob);
     };
-    state.mediaRecorder.stop();
+    rec.stop();
   });
-}
-
-// ══════════════════════════════════════════════════════
-// DEMO AI RESPONSES
-// ══════════════════════════════════════════════════════
-const DEMO_RESPONSES = {
-  'check my bill': [
-    "I can pull up your billing summary. Your current balance is DZD 2,400, due on the 20th. Would you like a breakdown of charges?",
-    "Your last bill was DZD 2,400. I see no unusual charges. Is there a specific item you'd like me to explain?"
-  ],
-  'internet is slow': [
-    "I'm sorry to hear that. A quick line check shows you're getting 18 Mbps of your 50 Mbps plan. Try rebooting your router — unplug it for 30 seconds. Let me know if that helps!",
-    "Slow connectivity can have several causes. Signal quality appears slightly degraded in your area. Our engineers are working on it. Expected resolution: within 2 hours."
-  ],
-  'reset my router': [
-    "Press and hold the reset button on the back of your router for 10 seconds until the lights blink. Then wait 2 minutes for it to reconnect. Let me know if that works!",
-    "Hold the small reset button for 10 seconds. The router will restart automatically. Your default Wi-Fi credentials are printed on the label underneath the device."
-  ],
-  'cancel subscription': [
-    "Before I process this, may I ask if there's an issue we can resolve? If you still wish to cancel, your service will remain active until the end of your billing cycle.",
-    "Your subscription is currently on the Premium Plan at DZD 3,200/month. Would you like to downgrade instead, or confirm full cancellation?"
-  ],
-  'talk to a human': [
-    "Of course! Connecting you to a live agent now. Average wait time is under 2 minutes. Please hold...",
-    "Transferring you to our specialist team. You'll receive an SMS confirmation shortly. Is there anything else I can note for the agent?"
-  ],
-  'default': [
-    "Thank you for reaching out to OTA Support! I'm looking into that for you. Could you provide a bit more detail so I can assist you better?",
-    "I've noted your query and I'm checking our knowledge base. Based on what you've described, here's what I can help you with today.",
-    "Great question! Let me pull up the relevant information for your account. This will just take a moment.",
-    "I understand how important this is. Let me make sure I get this right for you.",
-    "I've checked our system and here's what I found. Is there anything specific you'd like me to clarify?"
-  ]
-};
-
-function getDemoResponse(input) {
-  const lower = input.toLowerCase().trim();
-  for (const [key, replies] of Object.entries(DEMO_RESPONSES)) {
-    if (key !== 'default' && lower.includes(key)) {
-      return replies[Math.floor(Math.random() * replies.length)];
-    }
-  }
-  const d = DEMO_RESPONSES.default;
-  return d[Math.floor(Math.random() * d.length)];
 }
 
 // ══════════════════════════════════════════════════════
@@ -338,32 +345,50 @@ function removeTyping() {
   if (t) t.remove();
 }
 
-function sendMessage(text) {
-  if (!text.trim()) return;
+// Same origin as the page (python main.py --api serves both)
+const API_URL = '';
 
-  renderMessage('user', text.trim());
+async function apiCall(text) {
+  const res = await fetch(`${API_URL}/call`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ customer_input: text, customer_name: customerName() })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function sendMessage(text) {
+  if (!text.trim()) return;
+  text = text.trim();
+
+  renderMessage('user', text);
   chatInput.value = '';
   chatInput.style.height = '';
-
   if (quickActions) quickActions.style.display = 'none';
 
   showTyping();
 
-  const delay = 800 + Math.random() * 900;
-  setTimeout(() => {
+  try {
+    const data = await apiCall(text);
     removeTyping();
-    const reply = getDemoResponse(text);
-    renderMessage('agent', reply);
+    renderMessage('agent', data.reply);
+
+    if (settings.readReplies && state.speakerOn) speakText(data.reply);
 
     addHistoryItem({
-      id:      uid(),
-      snippet: text.trim().slice(0, 45),
+      id:      data.call_id,
+      snippet: text.slice(0, 45),
       time:    nowTime(),
       type:    'chat',
-      status:  'resolved'
+      status:  data.resolved ? 'resolved' : 'escalated'
     });
-    updateStats(true);
-  }, delay);
+    updateStats(data.resolved);
+  } catch (err) {
+    console.error('[API] /call failed:', err);
+    removeTyping();
+    renderMessage('agent', "Sorry, I can't reach the server right now. Please try again in a moment.");
+  }
 }
 
 // Auto-resize textarea
@@ -405,197 +430,326 @@ btnCallMode.addEventListener('click', () => switchMode('call'));
 // CALL STATE MACHINE   ← FIXED
 // ══════════════════════════════════════════════════════
 
-// Pre-scripted call dialogue — used only by typewriter inside call-transcript
-const CALL_SCRIPTS = [
-  [
-    { speaker: 'OTA Support', text: 'Hello! Thank you for calling OTA Support. How can I help you today?' },
-    { speaker: 'Customer',    text: 'Hi, my internet has been dropping since this morning.' },
-    { speaker: 'OTA Support', text: 'I understand, that must be frustrating. Let me run a quick diagnostic on your line...' },
-    { speaker: 'OTA Support', text: 'I can see some signal instability on your account. Our team has already been notified and is working on it. Expected fix: within 2 hours.' },
-    { speaker: 'Customer',    text: 'Okay, thank you!' },
-    { speaker: 'OTA Support', text: 'Of course! Is there anything else I can help you with today?' },
-  ],
-  [
-    { speaker: 'OTA Support', text: 'Welcome to OTA Support! My name is OTA and I\'m here to assist you.' },
-    { speaker: 'Customer',    text: 'I think I was charged twice on my last bill.' },
-    { speaker: 'OTA Support', text: 'I\'m sorry to hear that. Let me verify your billing details right away...' },
-    { speaker: 'OTA Support', text: 'You\'re right — I see a duplicate charge of DZD 2,400. A full refund has been initiated. You\'ll receive confirmation by SMS within 24 hours.' },
-    { speaker: 'Customer',    text: 'That\'s great, thanks so much!' },
-    { speaker: 'OTA Support', text: 'Happy to help! Thank you for contacting OTA Support. Have a wonderful day!' },
-  ],
-  [
-    { speaker: 'OTA Support', text: 'OTA Support, how may I assist you today?' },
-    { speaker: 'Customer',    text: 'I\'d like to know the available data plans.' },
-    { speaker: 'OTA Support', text: 'We currently offer three plans: Basic at DZD 1,200/mo with 50 GB, Premium at DZD 3,200/mo with unlimited data, and Pro at DZD 2,000/mo with 200 GB.' },
-    { speaker: 'Customer',    text: 'What does the Premium plan include?' },
-    { speaker: 'OTA Support', text: 'Premium includes unlimited 4G data, free calls, and priority customer support. Would you like me to upgrade your account?' },
-    { speaker: 'Customer',    text: 'Let me think about it. Thanks!' },
-    { speaker: 'OTA Support', text: 'No problem! Feel free to call us anytime. Have a great day!' },
-  ]
-];
-
-// ── Typewriter for call transcript ONLY ─────────────
-function typeCallScript(lines) {
-  // Reset
-  callTranscript.textContent = '';
-  state.callTranscriptText   = '';
-  let lineIdx = 0;
-  let charIdx = 0;
-  let currentLine = '';
-
-  // Clear any previous interval
-  if (state.typewriterIv) {
-    clearInterval(state.typewriterIv);
-    state.typewriterIv = null;
-  }
-
-  state.typewriterIv = setInterval(() => {
-    // Stop if call was ended
-    if (!state.callActive) {
-      clearInterval(state.typewriterIv);
-      state.typewriterIv = null;
-      return;
-    }
-
-    if (lineIdx >= lines.length) {
-      clearInterval(state.typewriterIv);
-      state.typewriterIv = null;
-      return;
-    }
-
-    const line = lines[lineIdx];
-    const fullLine = `${line.speaker}: ${line.text}`;
-
-    if (charIdx < fullLine.length) {
-      currentLine += fullLine[charIdx];
-      charIdx++;
-
-      // Update ONLY the call-transcript div
-      const existing = state.callTranscriptText;
-      callTranscript.textContent = existing + currentLine;
-      callTranscript.scrollTop   = callTranscript.scrollHeight;
-    } else {
-      // Line complete — move to next
-      state.callTranscriptText += currentLine + '\n';
-      currentLine = '';
-      charIdx  = 0;
-      lineIdx++;
-
-      if (lineIdx < lines.length) {
-        // Brief pause between speakers
-        clearInterval(state.typewriterIv);
-        state.typewriterIv = null;
-        setTimeout(() => {
-          if (!state.callActive) return; // abort if call ended during pause
-          state.typewriterIv = setInterval(arguments.callee, 22);
-        }, 600);
-      } else {
-        callTranscript.textContent = state.callTranscriptText.trim();
-        clearInterval(state.typewriterIv);
-        state.typewriterIv = null;
-      }
-    }
-  }, 22);
+// ══════════════════════════════════════════════════════
+// TEXT-TO-SPEECH (browser voices)
+// ══════════════════════════════════════════════════════
+function pickLang(text) {
+  if (/[\u0600-\u06FF]/.test(text)) return 'ar-SA';
+  return settings.language === 'fr' ? 'fr-FR' : (settings.language === 'ar' ? 'ar-SA' : 'en-US');
 }
 
-// ── startCall ─────────────────────────────────────────
+function stopSpeaking() {
+  state.speechToken++;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+// Resolves when the whole text has been spoken (or was cancelled)
+function speakText(text) {
+  return new Promise(resolve => {
+    const synth = window.speechSynthesis;
+    if (!synth || !text) { resolve(); return; }
+
+    synth.cancel();
+    const token = ++state.speechToken;
+    const parts = text.match(/[^.!?\n]+[.!?]*/g) || [text];
+    let i = 0;
+
+    const next = () => {
+      if (token !== state.speechToken || i >= parts.length) { resolve(); return; }
+      const part = parts[i++].trim();
+      if (!part) { next(); return; }
+      const u = new SpeechSynthesisUtterance(part);
+      u.lang    = pickLang(part);
+      u.onend   = next;
+      u.onerror = next;
+      synth.speak(u);
+    };
+    next();
+  });
+}
+
+// ══════════════════════════════════════════════════════
+// VOICE CALL  (mic → /transcribe → /call → spoken reply)
+// ══════════════════════════════════════════════════════
+const VAD = { silenceMs: 1300, minSpeechMs: 350, maxSpeechMs: 20000, idleResetMs: 30000 };
+
+function setCallState(label) { callStateLabel.textContent = label; }
+
+function appendCallLine(speaker, text) {
+  state.callTranscriptText += `${speaker}: ${text}\n`;
+  callTranscript.textContent = state.callTranscriptText.trim();
+  callTranscript.scrollTop   = callTranscript.scrollHeight;
+}
+
+function micLevel(buf) {
+  state.analyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  return Math.sqrt(sum / buf.length);
+}
+
+// Measure room noise for ~0.6 s so the "is the customer talking?" threshold fits
+async function calibrateNoise() {
+  const buf = new Float32Array(state.analyser.fftSize);
+  let total = 0, n = 0;
+  for (let t = 0; t < 12; t++) {
+    await new Promise(r => setTimeout(r, 50));
+    total += micLevel(buf); n++;
+  }
+  const floor = total / Math.max(n, 1);
+  state.vadThreshold = Math.min(0.08, Math.max(0.02, floor * 3.5));
+}
+
+// Records ONE customer utterance. Resolves with an audio Blob, or null
+// (call ended / muted / too short / nothing said → caller just listens again).
+function listenForUtterance(alive) {
+  return new Promise(resolve => {
+    const mime = pickMime();
+    const rec  = new MediaRecorder(state.callStream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+    const buf = new Float32Array(state.analyser.fftSize);
+    const startedAt = Date.now();
+    let speechStart = 0, lastVoice = 0, finished = false, iv = null;
+
+    const finish = keep => {
+      if (finished) return;
+      finished = true;
+      clearInterval(iv);
+      waveform.classList.remove('active');
+      if (rec.state === 'inactive') { resolve(null); return; }
+      rec.onstop = () => resolve(keep ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null);
+      rec.stop();
+    };
+
+    rec.start();
+    iv = setInterval(() => {
+      if (!alive()) return finish(false);
+      const now = Date.now();
+
+      if (state.muted) {                       // muted: drop anything in progress
+        if (speechStart) return finish(false);
+        return;
+      }
+
+      if (micLevel(buf) > state.vadThreshold) {
+        lastVoice = now;
+        if (!speechStart) { speechStart = now; waveform.classList.add('active'); }
+      }
+
+      if (speechStart) {
+        if (now - lastVoice  > VAD.silenceMs)   return finish(lastVoice - speechStart >= VAD.minSpeechMs);
+        if (now - speechStart > VAD.maxSpeechMs) return finish(true);
+      } else if (now - startedAt > VAD.idleResetMs) {
+        return finish(false);                  // renew the recorder during long silences
+      }
+    }, 50);
+  });
+}
+
+async function transcribeBlob(blob) {
+  const res = await fetch(`${API_URL}/transcribe?language=${encodeURIComponent(sttLanguage())}`, {
+    method:  'POST',
+    headers: { 'Content-Type': blob.type || 'audio/webm' },
+    body:    blob
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()).text || '';
+}
+
+// Agent line: show it in the transcript and speak it (if speaker is on)
+async function agentSay(text) {
+  setCallState('Agent speaking…');
+  appendCallLine('OTA Support', text);
+  if (state.speakerOn && window.speechSynthesis) {
+    waveform.classList.add('active');
+    await speakText(text);
+    waveform.classList.remove('active');
+  } else {
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+
+const NOISE_TEXT = /^(thank you\.?|thanks\.?|thanks for watching!?|you\.?|\.+)$/i;
+const GOODBYE    = /\b(goodbye|good bye|bye|hang up)\b/i;
+
+async function runCallLoop() {
+  const myRun = ++state.callRunId;
+  const alive = () => state.callActive && state.callRunId === myRun;
+
+  await calibrateNoise();
+  if (!alive()) return;
+  await agentSay('Hello! Thank you for calling OTA Support. How can I help you today?');
+
+  while (alive()) {
+    setCallState(state.muted ? 'Muted — unmute to talk' : 'Listening…');
+    const blob = await listenForUtterance(alive);
+    if (!alive()) break;
+    if (!blob) continue;
+
+    setCallState('Thinking…');
+    let text = '';
+    try {
+      text = (await transcribeBlob(blob)).trim();
+    } catch (err) {
+      console.error('[API] /transcribe failed:', err);
+      showToast('Could not understand the audio — please try again');
+      continue;
+    }
+    if (!alive()) break;
+    if (text.length < 2 || NOISE_TEXT.test(text)) continue;
+
+    appendCallLine('You', text);
+
+    if (GOODBYE.test(text)) {
+      await agentSay('Thank you for calling OTA Support. Have a wonderful day!');
+      if (alive()) endCall();
+      return;
+    }
+
+    let data;
+    try {
+      data = await apiCall(text);
+    } catch (err) {
+      console.error('[API] /call failed:', err);
+      if (!alive()) break;
+      await agentSay("I'm sorry, I'm having trouble reaching our system. Could you repeat that?");
+      continue;
+    }
+    if (!alive()) break;
+
+    state.callTurns.push(!!data.resolved);
+    await agentSay(data.reply);
+  }
+}
+
 async function startCall() {
-  // Safety: clean up any lingering state
   cleanupCall();
 
-  state.callActive  = true;
-  state.callSeconds = 0;
+  state.callActive         = true;
+  state.callLive           = false;
+  state.callSeconds        = 0;
   state.callTranscriptText = '';
+  state.callTurns          = [];
 
   callAvatarRing.classList.add('ringing');
-  callStateLabel.textContent  = 'Connecting...';
-  callTimerEl.textContent     = '00:00';
-  callTranscript.innerHTML    = '<span class="transcript-placeholder">Connecting to OTA Support...</span>';
+  setCallState('Connecting...');
+  callTimerEl.textContent  = '00:00';
+  callTranscript.innerHTML = '<span class="transcript-placeholder">Connecting to OTA Support...</span>';
   btnDownloadCall.classList.add('hidden');
-
-  // Switch button to End Call (red ✕)
   setCallBtn('end');
 
-  // Start microphone recording
-  await startAudioRecording();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+  } catch (err) {
+    console.error('[OTA] Microphone error:', err);
+    if (state.callActive) {
+      cleanupCall();
+      resetCallUI();
+      showToast('🎤 Microphone access is required for voice calls');
+    }
+    return;
+  }
 
-  // After connecting delay → go live
-  state.callStartTimeout = setTimeout(() => {
-    if (!state.callActive) return; // user cancelled during connecting
+  if (!state.callActive) {                       // user hung up while the permission prompt was open
+    stream.getTracks().forEach(t => t.stop());
+    return;
+  }
 
-    callStateLabel.textContent = 'Call in progress';
-    waveform.classList.add('active');
-    callTranscript.textContent = '';
+  state.callStream = stream;
+  stream.getAudioTracks().forEach(t => { t.enabled = !state.muted; });
 
-    // Pick a random script and start typewriter
-    const script = CALL_SCRIPTS[Math.floor(Math.random() * CALL_SCRIPTS.length)];
-    typeCallScript(script);
+  const AC = window.AudioContext || window.webkitAudioContext;
+  state.audioCtx = new AC();
+  if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
+  state.analyser = state.audioCtx.createAnalyser();
+  state.analyser.fftSize = 1024;
+  state.audioCtx.createMediaStreamSource(stream).connect(state.analyser);
 
-    // Start timer
-    state.callTimer = setInterval(() => {
-      state.callSeconds++;
-      callTimerEl.textContent = formatSeconds(state.callSeconds);
-    }, 1000);
+  startAudioRecording(stream);
 
-  }, 1500);
+  state.callLive = true;
+  callTranscript.textContent = '';
+  state.callTimer = setInterval(() => {
+    state.callSeconds++;
+    callTimerEl.textContent = formatSeconds(state.callSeconds);
+  }, 1000);
+
+  runCallLoop();
 }
 
-// ── endCall ───────────────────────────────────────────
+function resetCallUI() {
+  setCallState('Ready to connect');
+  callTimerEl.textContent = '00:00';
+  waveform.classList.remove('active');
+  callTranscript.innerHTML = '<span class="transcript-placeholder">Transcript will appear here during the call...</span>';
+  setCallBtn('start');
+}
+
 async function endCall() {
+  if (!state.callActive) return;
+  const wasLive      = state.callLive;
   const durationSecs = state.callSeconds;
+  const turns        = state.callTurns.slice();
 
-  cleanupCall(); // clears all timers & typewriter
-
-  callStateLabel.textContent = 'Call ended';
+  cleanupCall();
   waveform.classList.remove('active');
   setCallBtn('start');
 
-  // Stop audio recording and offer download
+  if (!wasLive) { resetCallUI(); return; }       // hung up before the mic was ready
+
+  setCallState('Call ended');
+
   const audioBlob = await stopAudioRecording();
+  releaseMic();
+
   if (audioBlob && audioBlob.size > 1000) {
-    downloadBlob(audioBlob, `ota-call-audio-${Date.now()}.webm`);
-    showToast('✓ Call recording saved');
+    const ext = (audioBlob.type.includes('ogg') ? 'ogg' : audioBlob.type.includes('mp4') ? 'm4a' : 'webm');
+    downloadBlob(audioBlob, `ota-call-audio-${Date.now()}.${ext}`);
   }
 
-  // Show download report button in call panel
   btnDownloadCall.classList.remove('hidden');
-  // Also trigger the text report download
   exportCallReport(durationSecs);
 
-  // Add to history
-  addHistoryItem({
-    id:      uid(),
-    snippet: `Call · ${formatSeconds(durationSecs)}`,
-    time:    nowTime(),
-    type:    'call',
-    status:  'resolved'
-  });
-  updateStats(true);
+  if (turns.length) {
+    const allResolved = turns.every(Boolean);
+    addHistoryItem({
+      id:      uid(),
+      snippet: `Call · ${formatSeconds(durationSecs)}`,
+      time:    nowTime(),
+      type:    'call',
+      status:  allResolved ? 'resolved' : 'escalated'
+    });
+    updateStats(allResolved);
+  }
 
-  // Reset UI labels after 2.5 s
   setTimeout(() => {
-    callStateLabel.textContent = 'Ready to connect';
-    callTimerEl.textContent    = '00:00';
+    if (!state.callActive) {
+      setCallState('Ready to connect');
+      callTimerEl.textContent = '00:00';
+    }
   }, 2500);
 }
 
-// ── cleanupCall — clears ALL timers/intervals safely ──
+function releaseMic() {
+  if (state.callStream) state.callStream.getTracks().forEach(t => t.stop());
+  state.callStream = null;
+  if (state.audioCtx) { state.audioCtx.close().catch(() => {}); state.audioCtx = null; }
+  state.analyser = null;
+}
+
+// Stops timers, speech and the call loop (the mic is released by endCall)
 function cleanupCall() {
   state.callActive = false;
+  state.callLive   = false;
+  state.callRunId++;                              // makes any running loop exit
+  stopSpeaking();
 
-  if (state.callStartTimeout) {
-    clearTimeout(state.callStartTimeout);
-    state.callStartTimeout = null;
-  }
-  if (state.callTimer) {
-    clearInterval(state.callTimer);
-    state.callTimer = null;
-  }
-  if (state.typewriterIv) {
-    clearInterval(state.typewriterIv);
-    state.typewriterIv = null;
-  }
-
+  if (state.callTimer) { clearInterval(state.callTimer); state.callTimer = null; }
   callAvatarRing.classList.remove('ringing');
 }
 
@@ -634,6 +788,7 @@ btnMute.addEventListener('click', () => {
   btnMute.classList.toggle('active', state.muted);
   btnMute.setAttribute('aria-label', state.muted ? 'Unmute microphone' : 'Mute microphone');
   btnMute.title = state.muted ? 'Unmute' : 'Mute';
+  if (state.callStream) state.callStream.getAudioTracks().forEach(t => { t.enabled = !state.muted; });
   showToast(state.muted ? '🔇 Microphone muted' : '🎤 Microphone active');
 });
 
@@ -642,12 +797,19 @@ btnSpeaker.addEventListener('click', () => {
   state.speakerOn = !state.speakerOn;
   btnSpeaker.classList.toggle('active', !state.speakerOn);
   btnSpeaker.setAttribute('aria-label', state.speakerOn ? 'Speaker on' : 'Speaker off');
+  if (!state.speakerOn) stopSpeaking();
   showToast(state.speakerOn ? '🔊 Speaker on' : '🔈 Speaker off');
 });
 
 // ══════════════════════════════════════════════════════
 // HISTORY
 // ══════════════════════════════════════════════════════
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function addHistoryItem(item) {
   state.history.unshift(item);
   renderHistory();
@@ -671,7 +833,7 @@ function renderHistory() {
     el.innerHTML = `
       <div class="history-icon">${iconSvg}</div>
       <div class="history-body">
-        <div class="history-snippet">${item.snippet}</div>
+        <div class="history-snippet">${escapeHtml(item.snippet)}</div>
         <div class="history-time">${item.time}</div>
       </div>
       <span class="history-badge badge-${item.status}">${item.status}</span>
@@ -723,17 +885,32 @@ function highlightStars(n) {
   });
 }
 
-btnSubmitFb.addEventListener('click', () => {
+btnSubmitFb.addEventListener('click', async () => {
   const msg = feedbackText.value.trim();
   if (!state.starRating && !msg) {
     feedbackText.focus();
     showToast('Please select a rating or leave a comment.');
     return;
   }
+
+  btnSubmitFb.disabled = true;
+  try {
+    const res = await fetch(`${API_URL}/feedback`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ rating: state.starRating, comment: msg, channel: state.mode })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    console.error('[API] /feedback failed:', err);
+    btnSubmitFb.disabled = false;
+    showToast('Could not send feedback — please try again.');
+    return;
+  }
+
   feedbackConfirm.classList.remove('hidden');
   feedbackText.value     = '';
   feedbackText.disabled  = true;
-  btnSubmitFb.disabled   = true;
   btnSubmitFb.style.opacity = '0.5';
   showToast('✓ Feedback submitted — thank you!');
 
@@ -745,13 +922,6 @@ btnSubmitFb.addEventListener('click', () => {
     state.starRating = 0;
     highlightStars(0);
   }, 3500);
-});
-
-// ══════════════════════════════════════════════════════
-// SETTINGS (stub)
-// ══════════════════════════════════════════════════════
-$('btn-settings').addEventListener('click', () => {
-  showToast('⚙ Settings panel coming soon');
 });
 
 // ══════════════════════════════════════════════════════
@@ -782,4 +952,19 @@ function init() {
   chatMessages.appendChild(row);
 }
 
+// ══════════════════════════════════════════════════════
+// BACKEND STATUS
+// ══════════════════════════════════════════════════════
+async function checkHealth() {
+  let online = false;
+  try {
+    const res = await fetch(`${API_URL}/health`, { cache: 'no-store' });
+    online = res.ok;
+  } catch (_) { /* offline */ }
+  statusDot.classList.toggle('offline', !online);
+  statusLabel.textContent = online ? 'Agent online' : 'Agent offline';
+}
+
 init();
+checkHealth();
+setInterval(checkHealth, 15000);

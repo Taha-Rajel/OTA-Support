@@ -49,10 +49,21 @@ class RecurringAlert(Base):
     report_summary = Column(Text)     # full summary sent to admin
 
 
+# ── Table 3: customer feedback from the web UI ─────────────
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id         = Column(Integer,  primary_key=True, index=True)
+    rating     = Column(Integer)             # 1-5 stars (0 = not rated)
+    comment    = Column(Text)
+    channel    = Column(String)              # "chat" or "call"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ── Create tables in PostgreSQL ────────────────────────────
 def init_db():
     Base.metadata.create_all(bind=engine)
-    print("✓ Tables created: call_reports, recurring_alerts")
+    print("✓ Tables ready: call_reports, recurring_alerts, feedback")
 
 
 # ── Get a DB session (used by all other files) ─────────────

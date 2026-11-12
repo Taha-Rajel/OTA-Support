@@ -36,7 +36,7 @@ def generate_reply(customer_input: str, kb_answer: str, intent: str) -> str:
     llm = get_llm()
 
     prompt = ChatPromptTemplate.from_template("""
-You are a friendly and professional voice agent for AntiGravity, a telecom company.
+You are a friendly and professional voice agent for OTA Support, a telecom company.
 Your job is to speak naturally with customers, like a real human support agent.
 
 Customer said: "{customer_input}"
